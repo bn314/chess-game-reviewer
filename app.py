@@ -42,6 +42,7 @@ st.markdown(
     .player-strip { display:flex; align-items:center; justify-content:space-between; min-height:34px;
                     padding:3px 7px; color:#27313c; }
     .player-name { font-size:18px; font-weight:800; }
+    .player-rating { font-size:14px; font-weight:600; color:#64748b; }
     .captured-pieces { color:#48525d; font-size:20px; letter-spacing:-4px; margin-right:9px; }
     .material-edge { color:#617080; font-size:13px; font-weight:750; margin-left:8px; }
     </style>""",
@@ -205,7 +206,21 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
 
 def board_svg(fen: str, last_move: dict | None) -> str:
     board = chess.Board(fen)
-    svg = chess.svg.board(board, size=550, coordinates=True)
+    # Draw only the useful coordinates: ranks on the left and files below.
+    # python-chess's built-in option draws all four edges, so add our own.
+    svg = chess.svg.board(board, size=580, coordinates=False)
+    svg = svg.replace('viewBox="0 0 360 360"', 'viewBox="-22 0 382 382"')
+    files = "".join(
+        f'<text x="{22.5 + 45 * file}" y="376" text-anchor="middle" '
+        f'font-family="Arial" font-size="13" font-weight="bold" fill="#475569">{chr(97 + file)}</text>'
+        for file in range(8)
+    )
+    ranks = "".join(
+        f'<text x="-11" y="{28 + 45 * row}" text-anchor="middle" '
+        f'font-family="Arial" font-size="13" font-weight="bold" fill="#475569">{8 - row}</text>'
+        for row in range(8)
+    )
+    svg = svg.replace("</svg>", files + ranks + "</svg>")
     if last_move is None:
         return svg
     square = chess.parse_square(last_move["to_square"])
@@ -223,7 +238,7 @@ def board_svg(fen: str, last_move: dict | None) -> str:
     return svg.replace("</svg>", sticker + "</svg>")
 
 
-def player_strip_html(name: str, colour: chess.Color, fen: str) -> str:
+def player_strip_html(name: str, rating: str, colour: chess.Color, fen: str) -> str:
     """Render a player name with the opponent's material they have captured."""
     board = chess.Board(fen)
     opponent = not colour
@@ -246,7 +261,7 @@ def player_strip_html(name: str, colour: chess.Color, fen: str) -> str:
     edge = f"+{material_edge}" if material_edge > 0 else ""
     return (
         "<div class='player-strip'>"
-        f"<span class='player-name'>{html.escape(name)}</span>"
+        f"<span class='player-name'>{html.escape(name)} <span class='player-rating'>{html.escape(rating)}</span></span>"
         f"<span><span class='captured-pieces'>{captured}</span>"
         f"<span class='material-edge'>{edge}</span></span></div>"
     )
@@ -337,6 +352,10 @@ selected = max(0, min(selected, len(rows) - 1))
 st.session_state.selected = selected
 current = rows[selected]
 
+
+def select_move(index: int) -> None:
+    st.session_state.selected = index
+
 headers = st.session_state.headers
 left, centre, right = st.columns([1.15, 2.5, 1.35])
 with left:
@@ -349,25 +368,22 @@ with left:
         first_column, second_column = st.columns(2, gap="small")
         for column, row in zip((first_column, second_column), rows[first:first + 2]):
             with column:
-                if st.button(f"{row['move_no']} {row['san']}", key=f"move-{row['index']}", use_container_width=True):
-                    st.session_state.selected = row["index"]
-                    st.rerun()
+                st.button(f"{row['move_no']} {row['san']}", key=f"move-{row['index']}", use_container_width=True,
+                          on_click=select_move, args=(row["index"],))
 
 with centre:
-    st.markdown(player_strip_html(headers.get("Black", "Black"), chess.BLACK, current["fen_after"]), unsafe_allow_html=True)
+    st.markdown(player_strip_html(headers.get("Black", "Black"), headers.get("BlackElo", "?"), chess.BLACK, current["fen_after"]), unsafe_allow_html=True)
     st.markdown(board_svg(current["fen_after"], current), unsafe_allow_html=True)
-    st.markdown(player_strip_html(headers.get("White", "White"), chess.WHITE, current["fen_after"]), unsafe_allow_html=True)
+    st.markdown(player_strip_html(headers.get("White", "White"), headers.get("WhiteElo", "?"), chess.WHITE, current["fen_after"]), unsafe_allow_html=True)
     previous, position, following = st.columns([1, 2, 1])
     with previous:
-        if st.button("← Previous", disabled=selected == 0, use_container_width=True):
-            st.session_state.selected -= 1
-            st.rerun()
+        st.button("← Previous", disabled=selected == 0, use_container_width=True,
+                  on_click=select_move, args=(selected - 1,))
     with position:
         st.markdown(f"<p style='text-align:center'><b>{current['move_no']} {current['san']}</b> — {current['label']}</p>", unsafe_allow_html=True)
     with following:
-        if st.button("Next →", disabled=selected == len(rows) - 1, use_container_width=True):
-            st.session_state.selected += 1
-            st.rerun()
+        st.button("Next →", disabled=selected == len(rows) - 1, use_container_width=True,
+                  on_click=select_move, args=(selected + 1,))
 
 with right:
     colour = COLOURS[current["label"]]
@@ -381,3 +397,4 @@ with right:
         unsafe_allow_html=True,
     )
     st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
+
