@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import math
 import os
 import shutil
 from pathlib import Path
@@ -37,7 +38,7 @@ COLOURS = {
     "Mistake": "#fb923c",
     "Blunder": "#ef4444",
 }
-ICONS = {"Best": "★", "Excellent": "✓", "Good": "✓", "Inaccuracy": "?!", "Mistake": "?", "Blunder": "??"}
+ICONS = {"Best": "★", "Excellent": "👍", "Good": "✓", "Inaccuracy": "?!", "Mistake": "?", "Blunder": "??"}
 
 
 def stockfish_path() -> str:
@@ -61,21 +62,44 @@ def white_pawns(score: chess.engine.PovScore) -> float:
     return score.white().score(mate_score=10_000) / 100
 
 
-def label_for_loss(loss: float) -> str:
-    if loss < 0.10:
+def player_rating(headers: dict, colour: str, fallback: int) -> int:
+    """Use the PGN rating when supplied; otherwise use the reviewer's setting."""
+    try:
+        value = int(headers.get(f"{colour}Elo", fallback))
+        return value if 400 <= value <= 3500 else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def expected_points(own_evaluation: float, rating: int) -> float:
+    """Map an evaluation to a player's expected score (0 to 1).
+
+    Chess.com publishes its expected-points cutoffs but not the underlying
+    rating/evaluation model. This is an explicit, adjustable approximation:
+    stronger players convert a given evaluation advantage more reliably.
+    """
+    clamped_eval = max(-12.0, min(12.0, own_evaluation))
+    conversion_scale = 2.25 - (max(400, min(3000, rating)) - 400) * 0.00058
+    return 1 / (1 + math.exp(-clamped_eval / conversion_scale))
+
+
+def label_for_expected_loss(loss: float) -> str:
+    # Classification bands published by Chess.com. A tiny tolerance treats the
+    # engine's exact best move as Best despite floating-point rounding.
+    if loss <= 0.002:
         return "Best"
-    if loss < 0.35:
+    if loss < 0.02:
         return "Excellent"
-    if loss < 0.75:
+    if loss < 0.05:
         return "Good"
-    if loss < 1.50:
+    if loss < 0.10:
         return "Inaccuracy"
-    if loss < 3.00:
+    if loss < 0.20:
         return "Mistake"
     return "Blunder"
 
 
-def analyse_game(pgn_text: str, depth: int, progress) -> list[dict]:
+def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> list[dict]:
     game = chess.pgn.read_game(io.StringIO(pgn_text))
     if game is None:
         raise ValueError("I could not find a game in that PGN.")
@@ -83,6 +107,8 @@ def analyse_game(pgn_text: str, depth: int, progress) -> list[dict]:
     moves = list(game.mainline_moves())
     if not moves:
         raise ValueError("The PGN does not contain any moves.")
+    white_rating = player_rating(dict(game.headers), "White", fallback_rating)
+    black_rating = player_rating(dict(game.headers), "Black", fallback_rating)
 
     board = game.board()
     results: list[dict] = []
@@ -105,10 +131,11 @@ def analyse_game(pgn_text: str, depth: int, progress) -> list[dict]:
             best_san = board.san(best_move)
             best_eval = white_pawns(best_info["score"])
             played_eval = white_pawns(played_info["score"])
-
-            raw_loss = best_eval - played_eval if player == "White" else played_eval - best_eval
-            loss = max(0.0, raw_loss)
-            label = label_for_loss(loss)
+            rating = white_rating if player == "White" else black_rating
+            best_points = expected_points(best_eval if player == "White" else -best_eval, rating)
+            played_points = expected_points(played_eval if player == "White" else -played_eval, rating)
+            points_lost = max(0.0, best_points - played_points)
+            label = label_for_expected_loss(points_lost)
             board.push(played_move)
             results.append(
                 {
@@ -121,7 +148,8 @@ def analyse_game(pgn_text: str, depth: int, progress) -> list[dict]:
                     "best_san": best_san,
                     "best_eval": round(best_eval, 2),
                     "played_eval": round(played_eval, 2),
-                    "loss": round(loss, 2),
+                    "expected_points_lost": round(points_lost, 4),
+                    "rating_used": rating,
                     "label": label,
                     "fen_before": position_fen,
                     "fen_after": board.fen(),
@@ -158,14 +186,19 @@ st.caption("Paste a PGN, analyse it with Stockfish, then replay the game move by
 
 with st.expander("Paste game PGN", expanded="analysis" not in st.session_state):
     pgn_text = st.text_area("PGN", height=180, placeholder="[Event \"Chess.com game\"]\n\n1. e4 e5 2. Nf3 Nc6 *")
-    depth = st.slider("Analysis depth", min_value=10, max_value=20, value=15, help="Higher is slower but more reliable.")
+    option_one, option_two = st.columns(2)
+    with option_one:
+        depth = st.slider("Analysis depth", min_value=10, max_value=20, value=15, help="Higher is slower but more reliable.")
+    with option_two:
+        fallback_rating = st.number_input("Your rating", min_value=400, max_value=3500, value=1200, step=25,
+                                          help="Used only if the PGN has no WhiteElo or BlackElo rating.")
     if st.button("Analyse game", type="primary"):
         if not pgn_text.strip():
             st.error("Paste a PGN first.")
         else:
             try:
                 bar = st.progress(0, text="Starting Stockfish…")
-                st.session_state.analysis = analyse_game(pgn_text, depth, bar)
+                st.session_state.analysis = analyse_game(pgn_text, depth, fallback_rating, bar)
                 st.session_state.selected = 0
                 st.session_state.headers = dict(chess.pgn.read_game(io.StringIO(pgn_text)).headers)
                 bar.empty()
