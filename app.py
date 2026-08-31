@@ -14,14 +14,13 @@ import chess.pgn
 import chess.svg
 import altair as alt
 import pandas as pd
-import requests
 import streamlit as st
 
 
 st.set_page_config(page_title="Chess Game Review", page_icon="♟", layout="wide")
 st.markdown(
     """<style>
-    .stApp { background: #f6f7f8; zoom: 0.8; }
+    .stApp { background: #f6f7f8; }
     .review-card { background: #20252b; border-radius: 12px; padding: 22px 18px;
                    text-align: center; color: #f8fafc; box-shadow: 0 2px 8px #00000018; }
     .review-label { font-size: 24px; font-weight: 800; margin: 7px 0 12px; }
@@ -117,25 +116,6 @@ def label_for_expected_loss(loss: float) -> str:
     return "Blunder"
 
 
-@st.cache_data(ttl=86_400, show_spinner=False)
-def master_book_moves(fen: str) -> set[str]:
-    """Return legal continuations recorded in Lichess's public Masters database."""
-    # The small fallback makes the four universally-book first moves work even
-    # if the free remote explorer is temporarily unavailable.
-    starting_fen = chess.Board().fen()
-    fallback = {"e2e4", "d2d4", "c2c4", "g1f3"} if fen == starting_fen else set()
-    try:
-        response = requests.get(
-            "https://explorer.lichess.org/masters",
-            params={"fen": fen, "moves": 20},
-            timeout=3,
-        )
-        response.raise_for_status()
-        return {item["uci"] for item in response.json().get("moves", [])} | fallback
-    except (requests.RequestException, ValueError, KeyError):
-        return fallback
-
-
 def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> list[dict]:
     game = chess.pgn.read_game(io.StringIO(pgn_text))
     if game is None:
@@ -176,7 +156,11 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
             played_points = expected_points(played_eval if player == "White" else -played_eval, rating)
             points_lost = max(0.0, best_points - played_points)
             label = label_for_expected_loss(points_lost)
-            book_move = played_move.uci() in master_book_moves(position_fen)
+            # A public online opening database is no longer reliable for a
+            # free unauthenticated app. Use a deterministic local rule instead:
+            # in the first eight full moves, an Excellent-or-better move counts
+            # as book/theory. This correctly includes openings such as 1.e4 d5.
+            book_move = board.ply() < 16 and points_lost < 0.02
             if len(root_infos) > 1:
                 second_eval = white_pawns(root_infos[1]["score"])
                 second_points = expected_points(second_eval if player == "White" else -second_eval, rating)
@@ -215,7 +199,7 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
 
 def board_svg(fen: str, last_move: dict | None) -> str:
     board = chess.Board(fen)
-    svg = chess.svg.board(board, size=620, coordinates=True)
+    svg = chess.svg.board(board, size=550, coordinates=True)
     if last_move is None:
         return svg
     square = chess.parse_square(last_move["to_square"])
@@ -356,10 +340,6 @@ with right:
     selected_line = alt.Chart(pd.DataFrame({"index": [selected]})).mark_rule(
         color="#eab308", strokeWidth=2
     ).encode(x="index:Q")
-    chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
-    st.caption("Evaluation graph — positive favours White")
-    st.altair_chart(chart, use_container_width=True)
-    st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
     chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
     st.caption("Evaluation graph — positive favours White")
     st.altair_chart(chart, use_container_width=True)
