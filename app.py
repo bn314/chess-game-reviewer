@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import html
 import math
 import os
 import shutil
@@ -38,6 +39,11 @@ st.markdown(
     .summary-icon { width:25px; height:25px; border-radius:50%; display:flex; align-items:center;
                     justify-content:center; color:#172033; font-size:13px; font-weight:900; }
     .summary-row .summary-icon { justify-self:center; }
+    .player-strip { display:flex; align-items:center; justify-content:space-between; min-height:34px;
+                    padding:3px 7px; color:#27313c; }
+    .player-name { font-size:18px; font-weight:800; }
+    .captured-pieces { color:#48525d; font-size:20px; letter-spacing:-4px; margin-right:9px; }
+    .material-edge { color:#617080; font-size:13px; font-weight:750; margin-left:8px; }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -217,6 +223,54 @@ def board_svg(fen: str, last_move: dict | None) -> str:
     return svg.replace("</svg>", sticker + "</svg>")
 
 
+def player_strip_html(name: str, colour: chess.Color, fen: str) -> str:
+    """Render a player name with the opponent's material they have captured."""
+    board = chess.Board(fen)
+    opponent = not colour
+    symbols = {
+        chess.PAWN: "♙" if opponent == chess.WHITE else "♟",
+        chess.KNIGHT: "♘" if opponent == chess.WHITE else "♞",
+        chess.BISHOP: "♗" if opponent == chess.WHITE else "♝",
+        chess.ROOK: "♖" if opponent == chess.WHITE else "♜",
+        chess.QUEEN: "♕" if opponent == chess.WHITE else "♛",
+    }
+    starting = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2, chess.ROOK: 2, chess.QUEEN: 1}
+    values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+    captured = "".join(
+        symbols[piece] * max(0, starting[piece] - len(board.pieces(piece, opponent)))
+        for piece in (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT, chess.PAWN)
+    )
+    own_lost = sum(values[piece] * max(0, starting[piece] - len(board.pieces(piece, colour))) for piece in starting)
+    opponent_lost = sum(values[piece] * max(0, starting[piece] - len(board.pieces(piece, opponent))) for piece in starting)
+    material_edge = opponent_lost - own_lost
+    edge = f"+{material_edge}" if material_edge > 0 else ""
+    return (
+        "<div class='player-strip'>"
+        f"<span class='player-name'>{html.escape(name)}</span>"
+        f"<span><span class='captured-pieces'>{captured}</span>"
+        f"<span class='material-edge'>{edge}</span></span></div>"
+    )
+
+
+def evaluation_chart(rows: list[dict], selected: int) -> alt.Chart:
+    chart_data = pd.DataFrame(rows)[["index", "played_eval"]]
+    chart_data["zero"] = 0
+    base = alt.Chart(chart_data).encode(
+        x=alt.X("index:Q", title="Move", axis=alt.Axis(tickCount=8, labelColor="#64748b")),
+        y=alt.Y("played_eval:Q", title="Evaluation", scale=alt.Scale(domain=[-6, 6]),
+                axis=alt.Axis(values=[-6, -3, 0, 3, 6], labelColor="#64748b")),
+    )
+    area = base.mark_area(opacity=0.78).encode(
+        y2="zero:Q",
+        color=alt.condition(alt.datum.played_eval >= 0, alt.value("#d7dde2"), alt.value("#4c5965")),
+    )
+    line = base.mark_line(color="#20252b", strokeWidth=1.5)
+    selected_line = alt.Chart(pd.DataFrame({"index": [selected]})).mark_rule(
+        color="#eab308", strokeWidth=2
+    ).encode(x="index:Q")
+    return (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
+
+
 def summary_html(rows: list[dict], headers: dict) -> str:
     """Build the compact, two-player review summary displayed beside the board."""
     labels = ["Great", "Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Book"]
@@ -283,11 +337,11 @@ selected = max(0, min(selected, len(rows) - 1))
 st.session_state.selected = selected
 current = rows[selected]
 
+headers = st.session_state.headers
 left, centre, right = st.columns([1.15, 2.5, 1.35])
 with left:
-    headers = st.session_state.headers
-    st.subheader(f"{headers.get('White', 'White')} vs {headers.get('Black', 'Black')}")
-    st.caption(f"Result: {headers.get('Result', '*')}  •  {len(rows)} half-moves")
+    st.caption("Evaluation graph — positive favours White")
+    st.altair_chart(evaluation_chart(rows, selected), use_container_width=True)
     st.divider()
     # Keep the move list dense: two move columns and no annotations. The board
     # itself carries the quality sticker for the selected move.
@@ -300,7 +354,9 @@ with left:
                     st.rerun()
 
 with centre:
+    st.markdown(player_strip_html(headers.get("Black", "Black"), chess.BLACK, current["fen_after"]), unsafe_allow_html=True)
     st.markdown(board_svg(current["fen_after"], current), unsafe_allow_html=True)
+    st.markdown(player_strip_html(headers.get("White", "White"), chess.WHITE, current["fen_after"]), unsafe_allow_html=True)
     previous, position, following = st.columns([1, 2, 1])
     with previous:
         if st.button("← Previous", disabled=selected == 0, use_container_width=True):
@@ -324,23 +380,4 @@ with right:
         f"</div>",
         unsafe_allow_html=True,
     )
-    st.divider()
-    chart_data = pd.DataFrame(rows)[["index", "played_eval"]]
-    chart_data["zero"] = 0
-    base = alt.Chart(chart_data).encode(
-        x=alt.X("index:Q", title="Move", axis=alt.Axis(tickCount=8, labelColor="#64748b")),
-        y=alt.Y("played_eval:Q", title="Evaluation", scale=alt.Scale(domain=[-6, 6]),
-                axis=alt.Axis(values=[-6, -3, 0, 3, 6], labelColor="#64748b")),
-    )
-    area = base.mark_area(opacity=0.78).encode(
-        y2="zero:Q",
-        color=alt.condition(alt.datum.played_eval >= 0, alt.value("#d7dde2"), alt.value("#4c5965")),
-    )
-    line = base.mark_line(color="#20252b", strokeWidth=1.5)
-    selected_line = alt.Chart(pd.DataFrame({"index": [selected]})).mark_rule(
-        color="#eab308", strokeWidth=2
-    ).encode(x="index:Q")
-    chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
-    st.caption("Evaluation graph — positive favours White")
-    st.altair_chart(chart, use_container_width=True)
     st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
