@@ -14,6 +14,7 @@ import chess.pgn
 import chess.svg
 import altair as alt
 import pandas as pd
+import requests
 import streamlit as st
 
 
@@ -26,19 +27,36 @@ st.markdown(
     .review-label { font-size: 24px; font-weight: 800; margin: 7px 0 12px; }
     .review-eval { font-size: 34px; font-weight: 800; letter-spacing: -1px; }
     .review-caption { color: #aab4bf; font-size: 13px; margin-top: 3px; }
+    .summary-card { background:#292e36; border-radius:12px; color:#f8fafc; overflow:hidden; }
+    .accuracy-title { text-align:center; padding:10px; font-size:17px; font-weight:750; background:#343a44; }
+    .accuracy-values { display:grid; grid-template-columns:1fr 1fr; text-align:center; font-size:25px;
+                       padding:10px 0; background:#15191e; }
+    .summary-head, .summary-row { display:grid; grid-template-columns:1fr 26px 30px 26px; align-items:center;
+                                  column-gap:5px; padding:3px 13px; font-size:14px; }
+    .summary-head { padding-top:11px; color:#f8fafc; text-align:center; }
+    .summary-row { font-size:15px; }
+    .summary-row b { text-align:center; }
+    .summary-icon { width:25px; height:25px; border-radius:50%; display:flex; align-items:center;
+                    justify-content:center; color:#172033; font-size:13px; font-weight:900; }
+    .summary-foot { color:#9ba6b2; font-size:10px; padding:10px 13px; }
     </style>""",
     unsafe_allow_html=True,
 )
 
 COLOURS = {
+    "Great": "#38bdf8",
     "Best": "#22c55e",
     "Excellent": "#65a30d",
     "Good": "#a3e635",
     "Inaccuracy": "#facc15",
     "Mistake": "#fb923c",
     "Blunder": "#ef4444",
+    "Book": "#d6a06f",
 }
-ICONS = {"Best": "★", "Excellent": "👍", "Good": "✓", "Inaccuracy": "?!", "Mistake": "?", "Blunder": "??"}
+ICONS = {
+    "Great": "‼", "Best": "★", "Excellent": "👍", "Good": "✓",
+    "Inaccuracy": "?!", "Mistake": "?", "Blunder": "??", "Book": "📖",
+}
 
 
 def stockfish_path() -> str:
@@ -99,6 +117,21 @@ def label_for_expected_loss(loss: float) -> str:
     return "Blunder"
 
 
+@st.cache_data(ttl=86_400, show_spinner=False)
+def master_book_moves(fen: str) -> set[str]:
+    """Return legal continuations recorded in Lichess's public Masters database."""
+    try:
+        response = requests.get(
+            "https://explorer.lichess.ovh/masters",
+            params={"fen": fen, "moves": 20},
+            timeout=3,
+        )
+        response.raise_for_status()
+        return {item["uci"] for item in response.json().get("moves", [])}
+    except (requests.RequestException, ValueError, KeyError):
+        return set()
+
+
 def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> list[dict]:
     game = chess.pgn.read_game(io.StringIO(pgn_text))
     if game is None:
@@ -123,7 +156,10 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
             # Both scores come from the SAME root position at the SAME depth.
             # This prevents a best move being marked inaccurate merely because a
             # second search looked one ply further ahead.
-            best_info = engine.analyse(board, chess.engine.Limit(depth=depth))
+            root_infos = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=2)
+            if isinstance(root_infos, dict):
+                root_infos = [root_infos]
+            best_info = root_infos[0]
             played_info = engine.analyse(
                 board, chess.engine.Limit(depth=depth), root_moves=[played_move]
             )
@@ -136,6 +172,17 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
             played_points = expected_points(played_eval if player == "White" else -played_eval, rating)
             points_lost = max(0.0, best_points - played_points)
             label = label_for_expected_loss(points_lost)
+            book_move = played_move.uci() in master_book_moves(position_fen)
+            if len(root_infos) > 1:
+                second_eval = white_pawns(root_infos[1]["score"])
+                second_points = expected_points(second_eval if player == "White" else -second_eval, rating)
+                only_good_move = best_points - second_points >= 0.10
+            else:
+                only_good_move = False
+            if book_move:
+                label = "Book"
+            elif label in {"Best", "Excellent"} and only_good_move:
+                label = "Great"
             board.push(played_move)
             results.append(
                 {
@@ -150,6 +197,7 @@ def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> l
                     "played_eval": round(played_eval, 2),
                     "expected_points_lost": round(points_lost, 4),
                     "rating_used": rating,
+                    "is_book": book_move,
                     "label": label,
                     "fen_before": position_fen,
                     "fen_after": board.fen(),
@@ -179,6 +227,39 @@ def board_svg(fen: str, last_move: dict | None) -> str:
         f'font-size="7" font-weight="bold" fill="#172033">{icon}</text>'
     )
     return svg.replace("</svg>", sticker + "</svg>")
+
+
+def summary_html(rows: list[dict], headers: dict) -> str:
+    """Build the compact, two-player review summary displayed beside the board."""
+    labels = ["Great", "Best", "Excellent", "Good", "Inaccuracy", "Mistake", "Blunder", "Book"]
+    white_rows = [row for row in rows if row["player"] == "White"]
+    black_rows = [row for row in rows if row["player"] == "Black"]
+
+    def accuracy(player_rows: list[dict]) -> float:
+        if not player_rows:
+            return 100.0
+        mean_loss = sum(row["expected_points_lost"] for row in player_rows) / len(player_rows)
+        return max(0.0, min(100.0, 100 * (1 - mean_loss)))
+
+    def count(player_rows: list[dict], label: str) -> int:
+        return sum(row["label"] == label for row in player_rows)
+
+    rows_html = "".join(
+        f"<div class='summary-row'>"
+        f"<span style='color:{COLOURS[label]}'>{label}</span>"
+        f"<b style='color:{COLOURS[label]}'>{count(white_rows, label)}</b>"
+        f"<span class='summary-icon' style='background:{COLOURS[label]}'>{ICONS[label]}</span>"
+        f"<b style='color:{COLOURS[label]}'>{count(black_rows, label)}</b>"
+        f"</div>" for label in labels
+    )
+    return f"""
+    <div class='summary-card'>
+      <div class='accuracy-title'>Game accuracy</div>
+      <div class='accuracy-values'><b>{accuracy(white_rows):.1f}%</b><b>{accuracy(black_rows):.1f}%</b></div>
+      <div class='summary-head'><b>{headers.get('White', 'White')}</b><span></span><b>{headers.get('Black', 'Black')}</b></div>
+      {rows_html}
+      <div class='summary-foot'>Accuracy is based on average expected-points lost.</div>
+    </div>"""
 
 
 st.title("♟ Chess Game Review")
@@ -270,4 +351,5 @@ with right:
     chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
     st.caption("Evaluation graph — positive favours White")
     st.altair_chart(chart, use_container_width=True)
-    st.caption("Engine-based review. More advanced labels and explanations come next.")
+    st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
+
