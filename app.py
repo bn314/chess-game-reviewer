@@ -295,8 +295,12 @@ def summary_html(rows: list[dict], headers: dict) -> str:
     def accuracy(player_rows: list[dict]) -> float:
         if not player_rows:
             return 100.0
-        mean_loss = sum(row["expected_points_lost"] for row in player_rows) / len(player_rows)
-        return max(0.0, min(100.0, 100 * (1 - mean_loss)))
+        # Compound retained expected points instead of averaging losses. This
+        # stops one large blunder in a short game being diluted into a 95% score.
+        retained = 1.0
+        for row in player_rows:
+            retained *= 1 - min(1.0, max(0.0, row["expected_points_lost"]))
+        return max(0.0, min(100.0, 100 * retained))
 
     def count(player_rows: list[dict], label: str) -> int:
         return sum(row["label"] == label for row in player_rows)
@@ -359,7 +363,6 @@ def select_move(index: int) -> None:
 headers = st.session_state.headers
 left, centre, right = st.columns([1.15, 2.5, 1.35])
 with left:
-    st.caption("Evaluation graph — positive favours White")
     st.altair_chart(evaluation_chart(rows, selected), use_container_width=True)
     st.divider()
     # Keep the move list dense: two move columns and no annotations. The board
@@ -397,4 +400,3 @@ with right:
         unsafe_allow_html=True,
     )
     st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
-
