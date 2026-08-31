@@ -38,7 +38,6 @@ st.markdown(
     .summary-row b { text-align:center; }
     .summary-icon { width:25px; height:25px; border-radius:50%; display:flex; align-items:center;
                     justify-content:center; color:#172033; font-size:13px; font-weight:900; }
-    .summary-foot { color:#9ba6b2; font-size:10px; padding:10px 13px; }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -54,7 +53,7 @@ COLOURS = {
     "Book": "#d6a06f",
 }
 ICONS = {
-    "Great": "‼", "Best": "★", "Excellent": "👍", "Good": "✓",
+    "Great": "!", "Best": "★", "Excellent": "👍", "Good": "✓",
     "Inaccuracy": "?!", "Mistake": "?", "Blunder": "??", "Book": "📖",
 }
 
@@ -120,16 +119,20 @@ def label_for_expected_loss(loss: float) -> str:
 @st.cache_data(ttl=86_400, show_spinner=False)
 def master_book_moves(fen: str) -> set[str]:
     """Return legal continuations recorded in Lichess's public Masters database."""
+    # The small fallback makes the four universally-book first moves work even
+    # if the free remote explorer is temporarily unavailable.
+    starting_fen = chess.Board().fen()
+    fallback = {"e2e4", "d2d4", "c2c4", "g1f3"} if fen == starting_fen else set()
     try:
         response = requests.get(
-            "https://explorer.lichess.ovh/masters",
+            "https://explorer.lichess.org/masters",
             params={"fen": fen, "moves": 20},
             timeout=3,
         )
         response.raise_for_status()
-        return {item["uci"] for item in response.json().get("moves", [])}
+        return {item["uci"] for item in response.json().get("moves", [])} | fallback
     except (requests.RequestException, ValueError, KeyError):
-        return set()
+        return fallback
 
 
 def analyse_game(pgn_text: str, depth: int, fallback_rating: int, progress) -> list[dict]:
@@ -258,7 +261,6 @@ def summary_html(rows: list[dict], headers: dict) -> str:
       <div class='accuracy-values'><b>{accuracy(white_rows):.1f}%</b><b>{accuracy(black_rows):.1f}%</b></div>
       <div class='summary-head'><b>{headers.get('White', 'White')}</b><span></span><b>{headers.get('Black', 'Black')}</b></div>
       {rows_html}
-      <div class='summary-foot'>Accuracy is based on average expected-points lost.</div>
     </div>"""
 
 
@@ -302,10 +304,15 @@ with left:
     st.subheader(f"{headers.get('White', 'White')} vs {headers.get('Black', 'Black')}")
     st.caption(f"Result: {headers.get('Result', '*')}  •  {len(rows)} half-moves")
     st.divider()
-    for row in rows:
-        if st.button(f"{row['move_no']} {row['san']}  {ICONS[row['label']]}", key=f"move-{row['index']}", use_container_width=True):
-            st.session_state.selected = row["index"]
-            st.rerun()
+    # Keep the move list dense: two move columns and no annotations. The board
+    # itself carries the quality sticker for the selected move.
+    for first in range(0, len(rows), 2):
+        first_column, second_column = st.columns(2, gap="small")
+        for column, row in zip((first_column, second_column), rows[first:first + 2]):
+            with column:
+                if st.button(f"{row['move_no']} {row['san']}", key=f"move-{row['index']}", use_container_width=True):
+                    st.session_state.selected = row["index"]
+                    st.rerun()
 
 with centre:
     st.markdown(board_svg(current["fen_after"], current), unsafe_allow_html=True)
@@ -352,4 +359,3 @@ with right:
     st.caption("Evaluation graph — positive favours White")
     st.altair_chart(chart, use_container_width=True)
     st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
-
