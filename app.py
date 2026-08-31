@@ -21,7 +21,7 @@ import streamlit as st
 st.set_page_config(page_title="Chess Game Review", page_icon="♟", layout="wide")
 st.markdown(
     """<style>
-    .stApp { background: #f6f7f8; }
+    .stApp { background: #f6f7f8; zoom: 0.8; }
     .review-card { background: #20252b; border-radius: 12px; padding: 22px 18px;
                    text-align: center; color: #f8fafc; box-shadow: 0 2px 8px #00000018; }
     .review-label { font-size: 24px; font-weight: 800; margin: 7px 0 12px; }
@@ -31,13 +31,14 @@ st.markdown(
     .accuracy-title { text-align:center; padding:10px; font-size:17px; font-weight:750; background:#343a44; }
     .accuracy-values { display:grid; grid-template-columns:1fr 1fr; text-align:center; font-size:25px;
                        padding:10px 0; background:#15191e; }
-    .summary-head, .summary-row { display:grid; grid-template-columns:1fr 26px 30px 26px; align-items:center;
-                                  column-gap:5px; padding:3px 13px; font-size:14px; }
+    .summary-head, .summary-row { display:grid; grid-template-columns:40% 20% 20% 20%; align-items:center;
+                                  padding:3px 13px; font-size:14px; }
     .summary-head { padding-top:11px; color:#f8fafc; text-align:center; }
     .summary-row { font-size:15px; }
     .summary-row b { text-align:center; }
     .summary-icon { width:25px; height:25px; border-radius:50%; display:flex; align-items:center;
                     justify-content:center; color:#172033; font-size:13px; font-weight:900; }
+    .summary-row .summary-icon { justify-self:center; }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -259,7 +260,7 @@ def summary_html(rows: list[dict], headers: dict) -> str:
     <div class='summary-card'>
       <div class='accuracy-title'>Game accuracy</div>
       <div class='accuracy-values'><b>{accuracy(white_rows):.1f}%</b><b>{accuracy(black_rows):.1f}%</b></div>
-      <div class='summary-head'><b>{headers.get('White', 'White')}</b><span></span><b>{headers.get('Black', 'Black')}</b></div>
+      <div class='summary-head'><span></span><b>{headers.get('White', 'White')}</b><span></span><b>{headers.get('Black', 'Black')}</b></div>
       {rows_html}
     </div>"""
 
@@ -355,6 +356,10 @@ with right:
     selected_line = alt.Chart(pd.DataFrame({"index": [selected]})).mark_rule(
         color="#eab308", strokeWidth=2
     ).encode(x="index:Q")
+    chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
+    st.caption("Evaluation graph — positive favours White")
+    st.altair_chart(chart, use_container_width=True)
+    st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
     chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
     st.caption("Evaluation graph — positive favours White")
     st.altair_chart(chart, use_container_width=True)
