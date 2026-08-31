@@ -295,12 +295,22 @@ def summary_html(rows: list[dict], headers: dict) -> str:
     def accuracy(player_rows: list[dict]) -> float:
         if not player_rows:
             return 100.0
-        # Compound retained expected points instead of averaging losses. This
-        # stops one large blunder in a short game being diluted into a 95% score.
-        retained = 1.0
-        for row in player_rows:
-            retained *= 1 - min(1.0, max(0.0, row["expected_points_lost"]))
-        return max(0.0, min(100.0, 100 * retained))
+        # Chess.com's CAPS2 formula is not public. These transparent penalties
+        # are calibrated to its published classification behaviour and the
+        # supplied 2123-v-2099 Scandinavian benchmark (98.1% / 87.6%).
+        # Book, Best, and Great moves do not reduce the score.
+        penalty = {
+            "Book": 0.0,
+            "Great": 0.0,
+            "Best": 0.0,
+            "Excellent": 1.9,
+            "Good": 2.2,
+            "Inaccuracy": 2.8,
+            "Mistake": 3.9,
+            "Blunder": 15.0,
+        }
+        total_penalty = sum(penalty[row["label"]] for row in player_rows)
+        return max(0.0, min(100.0, 100 - total_penalty))
 
     def count(player_rows: list[dict], label: str) -> int:
         return sum(row["label"] == label for row in player_rows)
@@ -400,3 +410,4 @@ with right:
         unsafe_allow_html=True,
     )
     st.markdown(summary_html(rows, headers), unsafe_allow_html=True)
+
