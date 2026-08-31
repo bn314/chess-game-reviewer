@@ -11,11 +11,23 @@ import chess
 import chess.engine
 import chess.pgn
 import chess.svg
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 
 st.set_page_config(page_title="Chess Game Review", page_icon="♟", layout="wide")
+st.markdown(
+    """<style>
+    .stApp { background: #f6f7f8; }
+    .review-card { background: #20252b; border-radius: 12px; padding: 22px 18px;
+                   text-align: center; color: #f8fafc; box-shadow: 0 2px 8px #00000018; }
+    .review-label { font-size: 24px; font-weight: 800; margin: 7px 0 12px; }
+    .review-eval { font-size: 34px; font-weight: 800; letter-spacing: -1px; }
+    .review-caption { color: #aab4bf; font-size: 13px; margin-top: 3px; }
+    </style>""",
+    unsafe_allow_html=True,
+)
 
 COLOURS = {
     "Best": "#22c55e",
@@ -141,17 +153,6 @@ def board_svg(fen: str, last_move: dict | None) -> str:
     return svg.replace("</svg>", sticker + "</svg>")
 
 
-def move_button(row: dict, selected: bool) -> None:
-    colour = COLOURS[row["label"]]
-    marker = f"<span style='color:{colour};font-weight:800'>{ICONS[row['label']]}</span>"
-    active = "background:#e8f0fe;" if selected else ""
-    st.markdown(
-        f"<div style='{active}padding:5px 8px;border-radius:6px;margin:2px 0'>"
-        f"{marker} <b>{row['move_no']} {row['san']}</b> <small>({row['label']})</small></div>",
-        unsafe_allow_html=True,
-    )
-
-
 st.title("♟ Chess Game Review")
 st.caption("Paste a PGN, analyse it with Stockfish, then replay the game move by move.")
 
@@ -207,14 +208,33 @@ with centre:
             st.rerun()
 
 with right:
-    st.subheader(current["label"])
-    st.metric("Estimated loss", f"{current['loss']:.2f} pawns")
-    st.write(f"**Played:** {current['san']}")
-    st.write(f"**Stockfish preferred:** {current['best_san']}")
-    st.caption(f"Best evaluation: {current['best_eval']:+.2f} • after played move: {current['played_eval']:+.2f}")
+    colour = COLOURS[current["label"]]
+    st.markdown(
+        f"<div class='review-card'>"
+        f"<div style='font-size:32px;color:{colour}'>{ICONS[current['label']]}</div>"
+        f"<div class='review-label'>{current['label']} move</div>"
+        f"<div class='review-eval'>{current['played_eval']:+.2f}</div>"
+        f"<div class='review-caption'>evaluation after {current['move_no']} {current['san']}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     st.divider()
-    chart = pd.DataFrame(rows)[["index", "played_eval"]].set_index("index")
-    st.caption("Evaluation after each move (positive = White advantage)")
-    st.line_chart(chart, height=160)
-    st.divider()
-    st.caption("This is an engine-based first version. ‘Brilliant’ and ‘Great Find’ need separate tactical rules and will be added later.")
+    chart_data = pd.DataFrame(rows)[["index", "played_eval"]]
+    chart_data["zero"] = 0
+    base = alt.Chart(chart_data).encode(
+        x=alt.X("index:Q", title="Move", axis=alt.Axis(tickCount=8, labelColor="#64748b")),
+        y=alt.Y("played_eval:Q", title="Evaluation", scale=alt.Scale(domain=[-6, 6]),
+                axis=alt.Axis(values=[-6, -3, 0, 3, 6], labelColor="#64748b")),
+    )
+    area = base.mark_area(opacity=0.78).encode(
+        y2="zero:Q",
+        color=alt.condition(alt.datum.played_eval >= 0, alt.value("#d7dde2"), alt.value("#4c5965")),
+    )
+    line = base.mark_line(color="#20252b", strokeWidth=1.5)
+    selected_line = alt.Chart(pd.DataFrame({"index": [selected]})).mark_rule(
+        color="#eab308", strokeWidth=2
+    ).encode(x="index:Q")
+    chart = (area + line + selected_line).properties(height=210).configure_view(strokeWidth=0).configure_axis(gridColor="#e4e8ec")
+    st.caption("Evaluation graph — positive favours White")
+    st.altair_chart(chart, use_container_width=True)
+    st.caption("Engine-based review. More advanced labels and explanations come next.")
